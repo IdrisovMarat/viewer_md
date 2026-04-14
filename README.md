@@ -27,6 +27,8 @@
 
 ```
 
+Отправка на удаленный PACS: `Mobile -> GET /studies/{id}/download-remote_pacs -> Backend (temp download from S3 + decompress) -> raw DICOM -> Remote PACS/web viewer`.
+
 ## 1. Задача, которую решает продукт
 
 В клинической практике врачам нужно:
@@ -55,6 +57,14 @@
 2. Backend сохраняет документы в MongoDB.
 3. Мобильное приложение получает уведомление и запрашивает актуальные данные через backend.
 
+### Отправка на удаленный PACS / web DICOM viewer
+
+1. Пользователь на мобильном устройстве отправляет команду в backend (`GET /api/v1/studies/{id}/download-remote_pacs`).
+2. Backend временно скачивает архив исследования из S3.
+3. Backend распаковывает архив и извлекает raw DICOM-файлы в исходном формате.
+4. Backend отправляет эти raw DICOM-файлы в удаленный PACS.
+5. Backend очищает временные файлы после завершения операции.
+
 ## Архитектура
 
 ### Компоненты
@@ -70,6 +80,7 @@
   - хранение метаданных исследований в PostgreSQL;
   - хранение отчетов и планов операций в MongoDB;
   - выдача short-lived signed URL для безопасного скачивания архивов из S3;
+  - отправка исследований в удаленный PACS: временное скачивание, распаковка и передача raw DICOM;
   - публикация событий в Kafka.
 
 - **Notification Gateway**
@@ -88,7 +99,8 @@
 - `GET /api/v1/studies` — список исследований для мобильного приложения.
 - `GET /api/v1/studies/{id}` — детали исследования.
 - `GET /api/v1/studies/{id}/download-device` — скачивание на девайс по short-lived signed `download_url`.
-- `GET /api/v1/studies/{id}/download-remote_pacs` — скачивание из s3 на удаленный PACS по short-lived signed `download_url`.
+- `GET /api/v1/studies/{id}/download-remote_pacs` — команда backend на отправку исследования в удаленный PACS (temp download + decompress + raw DICOM send).
+- `GET /api/v1/studies/{id}/download` — совместимый endpoint (redirect на signed S3 URL).
 - `DELETE /api/v1/studies/{id}/device` — удаление исследования c девайса.
 
 - `POST /api/v1/reports` — загрузка отчета дежурства от скрипта.
@@ -126,6 +138,7 @@ flowchart LR
       s3["S3\nStudy archives"]
       pg["PostgreSQL\nStudies metadata"]
       mongo["MongoDB\nReports & plans"]
+      remotePACS["Remote PACS / Web DICOM"]
     end
 
     subgraph mobile_sys["Mobile"]
@@ -144,6 +157,8 @@ flowchart LR
     doctor --> mobile
     notify -->|Push / In-app| mobile
     mobile -->|GET studies/reports/plans| backend
+    mobile -->|GET /studies/{id}/download-remote_pacs| backend
+    backend -->|Temp download + decompress + raw DICOM send| remotePACS
     
 
     classDef actor fill:#1f2937,stroke:#94a3b8,color:#e5e7eb;

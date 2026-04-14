@@ -25,15 +25,17 @@
                                                               └──────────┘    └──────────┘                               
 ```
 
+Отправка на удаленный PACS: `Mobile -> GET /studies/{id}/download-remote_pacs -> Backend (temp download from S3 + decompress) -> raw DICOM -> Remote PACS/web viewer`.
+
 # Описание сервиса в целом
 
 Система предназначена для быстрой и надежной доставки медицинских DICOM-исследований врачу на мобильное устройство без стриминга, с приоритетом мгновенного открытия уже загруженных данных. На больничном компьютере Python-скрипт автоматически (по расписанию) и вручную (через CLI) получает исследования из PACS, выполняет полный разбор DICOM и заранее рассчитывает все необходимые данные для просмотра (серии, порядок срезов, windowing, геометрию для MPR, контрольные суммы). После этого формируется единый архив исследования в формате `zstd`, который загружается в S3.
 
 Бекенд на Go принимает метаданные, хранит данные исследований в PostgreSQL, управляет доступом к архивам, а также публикует события о новых исследованиях, отчетах и планах операций в Kafka. Отчеты о дежурстве и планы операций принимаются от скрипта через backend API и сохраняются в MongoDB, откуда отдаются в мобильное приложение через backend. Для мобильных клиентов используется отдельный слой `Notification Gateway`: он читает события из Kafka, фильтрует их по пользователю и доставляет уведомления в приложение через push/in-app канал. Мобильное приложение не подключается напрямую к Kafka.
 
-Если в настройках пользователя включен флаг `downloading_auto`, приложение автоматически запрашивает у бэкенда короткоживущий signed URL и скачивает архив, затем распаковывает его и подготавливает к просмотру в фоне. Если флаг выключен, исследование только появляется в листинге и загружается вручную по команде врача через тот же механизм signed URL. После завершения подготовки пользователь получает уведомление, а исследование открывается мгновенно, без повторного тяжелого анализа DICOM на телефоне.
+Если в настройках пользователя включен флаг `downloading_auto`, приложение автоматически запрашивает у бэкенда короткоживущий signed URL и скачивает архив, затем распаковывает его и подготавливает к просмотру в фоне. Если флаг выключен, исследование только появляется в листинге и загружается вручную по команде врача через тот же механизм signed URL. После завершения подготовки пользователь получает уведомление, а исследование открывается мгновенно, без повторного тяжелого анализа DICOM на телефоне. По команде с мобильного клиента backend также может отправить исследование в удаленный PACS: временно скачать архив из S3, распаковать и переслать исходные raw DICOM-файлы.
 
-Дополнительно система поддерживает отправку отчетов о дежурстве и недельных планов операций с больничного ПК на бэкенд и в мобильное приложение, а также операции управления исследованиями (повторное скачивание, удаление локальной копии, удаление из S3, отправка на удаленный PACS). Хранение архивов в S3 ограничено 7 днями, после чего выполняется автоматическая очистка.
+Дополнительно система поддерживает отправку отчетов о дежурстве и недельных планов операций с больничного ПК на бэкенд и в мобильное приложение, а также операции управления исследованиями (повторное скачивание, удаление локальной копии, отправка на удаленный PACS). Хранение архивов в S3 ограничено 7 днями, после чего выполняется автоматическая очистка.
 
 
 ## Executive Summary
@@ -162,7 +164,7 @@ python script.py upload --plan
 #### 2.2.1. S3 (Yandex Storage)
 - **Что хранит**: Сжатые DICOM-исследования
 - **Политика хранения**: 7 дней (авто-очистка)
-- **Доступ**: Через короткоживущий signed URL, который выдается бэкендом по запросу (`GET /api/v1/studies/{id}/download-link`)
+- **Доступ**: Через короткоживущий signed URL, который выдается бэкендом по запросу (`GET /api/v1/studies/{id}/download-device`)
 
 #### 2.2.2. База данных бэкенда (PostgreSQL)
 - **Что хранит**: Метаданные и предобработанные данные исследований, пользователей
@@ -170,13 +172,14 @@ python script.py upload --plan
 #### 2.2.3. Документы (MongoDB)
 - **Что хранит**: Отчеты о дежурстве и планы операций
 - **Путь данных**: Скрипт отправляет JSON в backend API, backend сохраняет в MongoDB
-- **Доступ для мобилки**: Через backend endpoints `GET /api/v1/reports` и `GET /api/v1/plans/current`
+- **Доступ для мобилки**: Через backend endpoints `GET /api/v1/reports/current`, `GET /api/v1/reports/{id}`, `GET /api/v1/plans/current`, `GET /api/v1/plans/{id}`
 
 ### 2.3. Бекенд (API сервер)
 
 #### 2.3.1. Основные функции
 - Прием метаданных от скрипта
-- Выдача короткоживущего signed URL для скачивания архива исследования
+- Выдача короткоживущего signed URL для скачивания архива на устройство (`download-device`)
+- Инициация отправки исследования на удаленный PACS (`download-remote_pacs`): временная загрузка архива на backend, распаковка и отправка raw DICOM
 - Управление пользователями и настройками
 - Очистка старых исследований (проверка и удаление ежедневно в 02:00)
 - Отправка плана операций на мобильное приложение через брокер сообщений
@@ -217,7 +220,7 @@ python script.py upload --plan
 #### 2.5.3. Ручная загрузка (`downloading_auto=false`)
 1. Исследование появляется только в листинге
 2. Пользователь нажимает "Скачать"
-3. Запросить signed URL у бэкенда (`GET /studies/{id}/download-link`)
+3. Запросить signed URL у бэкенда (`GET /studies/{id}/download-device`)
 4. Скачать сжатое исследование из S3
 5. Распаковать (zstd)
 6. Сохранить локально
@@ -278,12 +281,16 @@ python script.py upload --plan
 │  ├── POST /api/v1/studies (прием метаданных)                 │
 │  ├── GET  /api/v1/studies (список для мобилки)               │
 │  ├── GET  /api/v1/studies/{id} (детали исследования)         │
-│  ├── GET  /api/v1/studies/{id}/download-link (signed URL)    │
+│  ├── GET  /api/v1/studies/{id}/download-device (signed URL)  │
+│  ├── GET  /api/v1/studies/{id}/download-remote_pacs          │
 │  ├── GET  /api/v1/studies/{id}/download (redirect в S3)      │
-│  ├── DELETE /api/v1/studies/{id} (удаление из S3)            │
+│  ├── DELETE /api/v1/studies/{id}/device                      │
 │  ├── POST /api/v1/reports (прием отчетов)                    │
-│  ├── GET  /api/v1/reports (список)                           │
+│  ├── GET  /api/v1/reports/current                             │
+│  ├── GET  /api/v1/reports/{id}                                │
 │  ├── POST /api/v1/plans (прием планов)                       │
+│  ├── GET  /api/v1/plans/current                               │
+│  ├── GET  /api/v1/plans/{id}                                  │
 │  ├── GET  /api/v1/user/settings (настройки)                  │
 │  └── PUT  /api/v1/user/settings (обновление настроек)        │
 │                                                              │
@@ -291,6 +298,7 @@ python script.py upload --plan
 │  ├── Metadata Service (работа с БД)                          │
 │  ├── Signed URL Service (short-lived URL)                    │
 │  ├── PDF Converter (отчеты TXT → PDF)                        │
+│  ├── Remote PACS Sender (temp download + raw DICOM send)     │
 │  ├── Cleanup Scheduler (очистка S3)                          │
 │  └── Message Producer (отправка в брокер)                    │
 │                                                              │
@@ -310,6 +318,12 @@ python script.py upload --plan
         │                  │  │ ├── reports.new  │
         └──────────────────┘  │ └── plans.new    │
                     ↑         └──────────────────┘
+                    │
+                    │ GET /studies/{id}/download-remote_pacs
+                    ▼
+        ┌────────────────────────────────┐
+        │ Remote PACS / Web DICOM Viewer│
+        └────────────────────────────────┘
                     │                   │
                     │                   │ Kafka event
                     │                   ↓
@@ -457,17 +471,20 @@ func NewRouter(h *Handlers) *gin.Engine {
     studies.POST("", h.CreateStudy)
     studies.GET("", h.ListStudies)
     studies.GET("/:id", h.GetStudy)
-    studies.GET("/:id/download-link", h.GetStudyDownloadLink) // short-lived signed URL
+    studies.GET("/:id/download-device", h.GetStudyDownloadForDevice) // short-lived signed URL
+    studies.GET("/:id/download-remote_pacs", h.SendStudyToRemotePACS) // временная загрузка+распаковка+отправка raw DICOM
     studies.GET("/:id/download", h.DownloadStudyArchive) // redirect в signed S3 URL
-    studies.DELETE("/:id", h.DeleteStudy)
+    studies.DELETE("/:id/device", h.DeleteStudyFromDevice)
 
     reports := api.Group("/reports")
     reports.POST("", h.CreateReport)
-    reports.GET("", h.ListReports)
+    reports.GET("/current", h.GetCurrentReport)
+    reports.GET("/:id", h.GetReportByID)
 
     plans := api.Group("/plans")
     plans.POST("", h.CreatePlan)
     plans.GET("/current", h.GetCurrentPlan)
+    plans.GET("/:id", h.GetPlanByID)
 
     user := api.Group("/user")
     user.GET("/settings", h.GetUserSettings)
@@ -482,8 +499,9 @@ type StudyService interface {
     CreateStudy(ctx context.Context, in CreateStudyInput) (Study, error)
     GetStudy(ctx context.Context, id uuid.UUID) (StudyDetails, error)
     ListStudies(ctx context.Context, filter StudyFilter) ([]Study, error)
-    DeleteStudy(ctx context.Context, id uuid.UUID) error
-    GetStableDownloadURL(ctx context.Context, id uuid.UUID) (string, error)
+    DeleteStudyFromDevice(ctx context.Context, id uuid.UUID) error
+    GetSignedDeviceDownloadURL(ctx context.Context, id uuid.UUID) (string, error)
+    SendToRemotePACS(ctx context.Context, id uuid.UUID) error
 }
 
 // internal/service/messaging.go
@@ -738,7 +756,7 @@ db.surgery_plans.createIndex({ created_at: -1 })
 }
 ```
 
-#### GET /api/v1/studies/{id}/download-link
+#### GET /api/v1/studies/{id}/download-device
 **Описание**: Получение короткоживущего signed URL для скачивания архива
 
 **Response**: `200 OK`
@@ -754,8 +772,20 @@ db.surgery_plans.createIndex({ created_at: -1 })
 
 **Response**: `302 Found` (Redirect to signed S3 URL)
 
-#### DELETE /api/v1/studies/{id}
-**Описание**: Удаление исследования из S3
+#### GET /api/v1/studies/{id}/download-remote_pacs
+**Описание**: Команда отправки исследования на удаленный PACS через backend
+
+**Логика выполнения**:
+1. Backend проверяет доступ пользователя и наличие архива в S3.
+2. Backend временно скачивает архив исследования из S3 на локальное временное хранилище.
+3. Backend распаковывает архив и извлекает raw DICOM-файлы (как были получены из hospital PACS).
+4. Backend отправляет raw DICOM-файлы в удаленный PACS для web DICOM-просмотра.
+5. Backend очищает временные файлы после завершения операции.
+
+**Response**: `202 Accepted`
+
+#### DELETE /api/v1/studies/{id}/device
+**Описание**: Удаление локальной копии исследования на устройстве (команда синхронизации для клиента)
 
 **Response**: `204 No Content`
 
@@ -785,23 +815,24 @@ db.surgery_plans.createIndex({ created_at: -1 })
 
 **Response**: `201 Created`
 
-#### GET /api/v1/reports
-**Описание**: Список отчетов
+#### GET /api/v1/reports/current
+**Описание**: Текущий отчет за прошедшее дежурство
 
 **Response**: `200 OK`
 ```json
 {
-    "reports": [
-        {
-            "id": "uuid",
-            "report_date": "2024-01-15",
-            "doctor_name": "Иванов И.И.",
-            "patients_count": 25,
-            "has_pdf": true
-        }
-    ]
+    "id": "uuid",
+    "report_date": "2024-01-15",
+    "doctor_name": "Иванов И.И.",
+    "patients_count": 25,
+    "has_pdf": true
 }
 ```
+
+#### GET /api/v1/reports/{id}
+**Описание**: Отчет дежурства по идентификатору/дате
+
+**Response**: `200 OK`
 
 #### GET /api/v1/reports/{id}/pdf
 **Описание**: Скачать PDF версию отчета
@@ -847,6 +878,11 @@ db.surgery_plans.createIndex({ created_at: -1 })
     "created_at": "2024-01-15T10:00:00Z"
 }
 ```
+
+#### GET /api/v1/plans/{id}
+**Описание**: План операций по идентификатору недели
+
+**Response**: `200 OK`
 
 ### 7.4. Пользователи и настройки
 
@@ -1120,7 +1156,7 @@ study_{uid}.zst
     "num_slices": 350,
     "compressed_size_mb": 250,
     "downloading_auto": true,
-    "download_url": "/api/v1/studies/550e8400-e29b-41d4-a716-446655440000/download-link",
+    "download_url": "/api/v1/studies/550e8400-e29b-41d4-a716-446655440000/download-device",
     "archive_checksum_sha256": "2a9f3c4f..."
 }
 ```
@@ -1263,7 +1299,7 @@ Mobile App                    Backend                       S3
     │                            │                          │
     │◀─ Metadata + can_download ─┤                          │
     │                            │                          │
-    ├── GET /studies/{id}/download-link ───────────────────▶│
+    ├── GET /studies/{id}/download-device ─────────────────▶│
     │                            │                          │
     │◀──────────── signed URL ───┤                          │
     │                            │                          │
@@ -1285,17 +1321,17 @@ Mobile App                        Backend                S3              Remote 
     │                                │                   │                    │
     │ (User clicks Send to PACS)     │                   │                    │
     │                                │                   │                    │
-    ├── GET /studies/{id}/download ─▶│                   │                    │
+    ├─ GET /studies/{id}/download-remote_pacs ───────────▶│                    │
     │                                │                   │                    │
+    │                                │◀── temp archive ──┤                    │
     │                                │                   │                    │
-    │                                │◀─── Archive ──────┤                    │
+    │                                │─── Decompress ────┤  (temporary local) │
     │                                │                   │                    │
-    │                                │─── Decompress ────┤                    │
+    │                                │──── raw DICOM files ──────────────────▶│
     │                                │                   │                    │
-    │                                │─ raw DICOM files──│───────────────────▶│
+    │◀── 202 Accepted / status ──────┼───────────────────┼────────────────────┤
     │                                │                   │                    │
-    │◀── Response Notification───-───┼───────────────────┼────────────────────┤
-    │                                │                   │                    │
+    │                                │── cleanup temp ───┤                    │
     │                                │                   │                    │
 ```
 
@@ -1314,12 +1350,12 @@ Script                    Backend                   MongoDB              Mobile
     │                         ├── publish plans.new ───┼──────────────────▶│
     │                         │      (Kafka notify)    │                   │
     │                         │                        │                   │
-    │                         │◀──── GET /reports ─────────────────────────┤
+    │                         │◀─ GET /reports/current|/{id} ──────────────┤
     │                         ├── find reports ───────▶│                   │
     │                         │◀── reports documents ──┤                   │
     │                         ├── JSON reports ───────────────────────────▶│
     │                         │                        │                   │
-    │                         │◀─ GET /plans/current ──────────────────────┤
+    │                         │◀─ GET /plans/current|/{id} ─────────────────┤
     │                         ├── find current plan ──▶│                   │
     │                         │◀── plan document ──────┤                   │
     │                         ├── JSON current plan ──────────────────────▶│
@@ -1329,7 +1365,7 @@ Script                    Backend                   MongoDB              Mobile
 1. Скрипт отправляет отчеты и планы операций в backend (`POST /reports`, `POST /plans`).
 2. Backend сохраняет документы в MongoDB (`reports`, `surgery_plans`).
 3. Backend публикует `reports.new` и `plans.new` в Kafka для уведомления мобильного клиента.
-4. Мобильное приложение получает уведомление и запрашивает данные через backend API.
+4. Мобильное приложение получает уведомление и запрашивает данные через backend API (`GET /reports/current|{id}`, `GET /plans/current|{id}`).
 5. Backend читает MongoDB и возвращает отчеты/планы мобильному приложению.
 
 ---
@@ -1883,8 +1919,8 @@ func AuthMiddleware(verifier jwt.Verifier, public map[string]struct{}) gin.Handl
 ### 14.2. Доступ к S3 (short-lived signed URL)
 
 ```go
-// GET /api/v1/studies/:id/download-link
-func (h *Handlers) GetStudyDownloadLink(c *gin.Context) {
+// GET /api/v1/studies/:id/download-device
+func (h *Handlers) GetStudyDownloadForDevice(c *gin.Context) {
     user := auth.MustUser(c)
     studyID := uuid.MustParse(c.Param("id"))
 
@@ -2162,6 +2198,7 @@ async def cleanup_expired_studies():
 | **`zstd` сжатие** | Лучший баланс скорости и размера для больших исследований | Динамически выбирать уровень сжатия по типу модальности |
 | **Единый архив в S3** | Упрощает хранение и повторную загрузку | Добавить optional split-архивы по сериям для очень больших кейсов |
 | **Short-lived signed URL** | Повышает безопасность доступа к S3 | Добавить фоновый refresh URL при длинных скачиваниях |
+| **Remote PACS relay через backend** | Дает web DICOM-просмотр: мобильный клиент инициирует отправку, backend временно скачивает архив, распаковывает и пересылает raw DICOM в удаленный PACS | Добавить очередь задач и статус-трекинг доставки в remote PACS |
 | **`manifest_version` + JSON Schema контракт** | Предсказуемая совместимость backend/iOS/Android | Автоматическая валидация схемы в CI перед публикацией |
 | **Пре-рендеринг на мобилке после распаковки** | Пользователь открывает исследование без ожидания анализа | Добавить warm-up кэша GPU/Metal/OpenGL при зарядке и Wi‑Fi |
 | **Хранение в S3 7 дней** | Баланс доступности и стоимости | Политики хранения по классам исследований (горячее/холодное) |
