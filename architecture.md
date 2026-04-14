@@ -23,7 +23,7 @@
 
 Бекенд на Go принимает метаданные, хранит данные исследований в PostgreSQL, управляет доступом к архивам, а также публикует события о новых исследованиях, отчетах и планах операций в Kafka. Отчеты о дежурстве и планы операций принимаются от скрипта через backend API и сохраняются в MongoDB, откуда отдаются в мобильное приложение через backend. Для мобильных клиентов используется отдельный слой `Notification Gateway`: он читает события из Kafka, фильтрует их по пользователю и доставляет уведомления в приложение через push/in-app канал. Мобильное приложение не подключается напрямую к Kafka.
 
-Если в настройках пользователя включен флаг `downloading_auto`, приложение автоматически скачивает архив по `download_url`, распаковывает его и подготавливает к просмотру в фоне. Если флаг выключен, исследование только появляется в листинге и загружается вручную по команде врача. После завершения подготовки пользователь получает уведомление, а исследование открывается мгновенно, без повторного тяжелого анализа DICOM на телефоне.
+Если в настройках пользователя включен флаг `downloading_auto`, приложение автоматически запрашивает у бэкенда короткоживущий signed URL и скачивает архив, затем распаковывает его и подготавливает к просмотру в фоне. Если флаг выключен, исследование только появляется в листинге и загружается вручную по команде врача через тот же механизм signed URL. После завершения подготовки пользователь получает уведомление, а исследование открывается мгновенно, без повторного тяжелого анализа DICOM на телефоне.
 
 Дополнительно система поддерживает отправку отчетов о дежурстве и недельных планов операций с больничного ПК на бэкенд и в мобильное приложение, а также операции управления исследованиями (повторное скачивание, удаление локальной копии, удаление из S3, отправка на удаленный PACS). Хранение архивов в S3 ограничено 7 днями, после чего выполняется автоматическая очистка.
 
@@ -39,7 +39,7 @@
 - `Notification Gateway` читает Kafka и доставляет события на устройства через FCM/APNS/in-app.
 - При `downloading_auto=true` архив скачивается автоматически; при `false` — только ручная загрузка из листинга.
 - В архиве фиксируются `manifest_version`, `dicom_order` и обязательные предрасчеты для мгновенного открытия.
-- Повторная загрузка доступна через стабильный `download_url` до удаления объекта из S3.
+- Повторная загрузка доступна через on-demand short-lived signed URL, выдаваемый бэкендом.
 - Срок хранения архивов в S3 — 7 дней с автоматической очисткой.
 
 ---
@@ -154,7 +154,7 @@ python script.py upload --plan
 #### 2.2.1. S3 (Yandex Storage)
 - **Что хранит**: Сжатые DICOM-исследования
 - **Политика хранения**: 7 дней (авто-очистка)
-- **Доступ**: Через стабильный `download_url` бэкенда (валиден весь срок жизни объекта в S3)
+- **Доступ**: Через короткоживущий signed URL, который выдается бэкендом по запросу (`GET /api/v1/studies/{id}/download-link`)
 
 #### 2.2.2. База данных бэкенда (PostgreSQL)
 - **Что хранит**: Метаданные и предобработанные данные исследований, пользователей
@@ -168,7 +168,7 @@ python script.py upload --plan
 
 #### 2.3.1. Основные функции
 - Прием метаданных от скрипта
-- Выдача стабильного URL для скачивания архива исследования
+- Выдача короткоживущего signed URL для скачивания архива исследования
 - Управление пользователями и настройками
 - Очистка старых исследований (проверка и удаление ежедневно в 02:00)
 - Отправка плана операций на мобильное приложение через брокер сообщений
@@ -187,7 +187,7 @@ python script.py upload --plan
 - События из Kafka читает backend-компонент `Notification Gateway`
 - `Notification Gateway` фильтрует события по `user_id`, проверяет ACL, логирует доставку
 - Для доставки на устройство использует push-каналы (FCM/APNS) и in-app канал
-- Мобилка по событию берет `study_id` и `download_url`, далее работает по стандартному API
+- Мобилка по событию берет `study_id`, запрашивает signed URL у бэкенда и далее скачивает архив
 
 ### 2.5. Мобильное приложение
 
@@ -199,7 +199,7 @@ python script.py upload --plan
 - `plans.new` - новые планы операций
 
 #### 2.5.2. Автоматическая загрузка (`downloading_auto=true`)
-1. Получить `download_url` из сообщения брокера
+1. Получить `study_id` из сообщения брокера и запросить signed URL у бэкенда
 2. Скачать сжатое исследование из S3
 3. Распаковать (zstd)
 4. Сохранить локально
@@ -209,7 +209,7 @@ python script.py upload --plan
 #### 2.5.3. Ручная загрузка (`downloading_auto=false`)
 1. Исследование появляется только в листинге
 2. Пользователь нажимает "Скачать"
-3. Получить `download_url` из деталей исследования
+3. Запросить signed URL у бэкенда (`GET /studies/{id}/download-link`)
 4. Скачать сжатое исследование из S3
 5. Распаковать (zstd)
 6. Сохранить локально
@@ -240,7 +240,7 @@ python script.py upload --plan
 | Сложность работы с тысячами DICOM-файлов | Единый архив `zstd` с `manifest.json` и предобработанными данными |
 | Риск некорректного порядка срезов | Явная фиксация `dicom_order` в manifest и проверки качества перед публикацией |
 | Нестабильная доставка событий на устройства | Kafka + `Notification Gateway` + push/in-app доставка |
-| Повторная загрузка в течение недели | Стабильный `download_url` без TTL до удаления из S3 |
+| Повторная загрузка в течение недели | On-demand signed URL с коротким TTL и повторным выпуском по запросу |
 
 ---
 
@@ -269,8 +269,9 @@ python script.py upload --plan
 │  API Gateway (Golang)                                        │
 │  ├── POST /api/v1/studies (прием метаданных)                 │
 │  ├── GET  /api/v1/studies (список для мобилки)               │
-│  ├── GET  /api/v1/studies/{id} (детали + download_url)       │
-│  ├── GET  /api/v1/studies/{id}/download (скачивание)         │
+│  ├── GET  /api/v1/studies/{id} (детали исследования)          │
+│  ├── GET  /api/v1/studies/{id}/download-link (signed URL)    │
+│  ├── GET  /api/v1/studies/{id}/download (redirect в S3)       │
 │  ├── DELETE /api/v1/studies/{id} (удаление из S3)            │
 │  ├── POST /api/v1/reports (прием отчетов)                    │
 │  ├── GET  /api/v1/reports (список)                           │
@@ -280,7 +281,7 @@ python script.py upload --plan
 │                                                              │
 │  Services                                                    │
 │  ├── Metadata Service (работа с БД)                          │
-│  ├── Download URL Service (стабильные URL)                   │
+│  ├── Signed URL Service (short-lived URL)                    │
 │  ├── PDF Converter (отчеты TXT → PDF)                        │
 │  ├── Cleanup Scheduler (очистка S3)                          │
 │  └── Message Producer (отправка в брокер)                    │
@@ -469,7 +470,8 @@ func NewRouter(h *Handlers) *gin.Engine {
     studies.POST("", h.CreateStudy)
     studies.GET("", h.ListStudies)
     studies.GET("/:id", h.GetStudy)
-    studies.GET("/:id/download", h.DownloadStudyArchive) // стабильный URL для мобилки
+    studies.GET("/:id/download-link", h.GetStudyDownloadLink) // short-lived signed URL
+    studies.GET("/:id/download", h.DownloadStudyArchive) // redirect в signed S3 URL
     studies.DELETE("/:id", h.DeleteStudy)
 
     reports := api.Group("/reports")
@@ -727,7 +729,7 @@ db.surgery_plans.createIndex({ created_at: -1 })
 ```
 
 #### GET /api/v1/studies/{id}
-**Описание**: Получение деталей исследования и стабильного URL загрузки
+**Описание**: Получение деталей исследования
 
 **Response**: `200 OK`
 ```json
@@ -745,14 +747,25 @@ db.surgery_plans.createIndex({ created_at: -1 })
         "default_window_width": 80
     },
     "preprocessed_data": {...},
-    "download_url": "https://api.hospital.com/api/v1/studies/550e8400-e29b-41d4-a716-446655440000/download"
+    "can_download": true
+}
+```
+
+#### GET /api/v1/studies/{id}/download-link
+**Описание**: Получение короткоживущего signed URL для скачивания архива
+
+**Response**: `200 OK`
+```json
+{
+    "download_url": "https://storage.yandexcloud.net/...&X-Amz-Expires=300",
+    "expires_in_seconds": 300
 }
 ```
 
 #### GET /api/v1/studies/{id}/download
-**Описание**: Скачивание архива исследования по стабильному URL (валиден до удаления из S3)
+**Описание**: Совместимый endpoint: редирект на короткоживущий signed S3 URL
 
-**Response**: `200 OK` (binary stream, `application/zstd`)
+**Response**: `302 Found` (Redirect to signed S3 URL)
 
 #### DELETE /api/v1/studies/{id}
 **Описание**: Удаление исследования из S3
@@ -1120,7 +1133,7 @@ study_{uid}.zst
     "num_slices": 350,
     "compressed_size_mb": 250,
     "downloading_auto": true,
-    "download_url": "https://api.hospital.com/api/v1/studies/550e8400-e29b-41d4-a716-446655440000/download",
+    "download_url": "/api/v1/studies/550e8400-e29b-41d4-a716-446655440000/download-link",
     "archive_checksum_sha256": "2a9f3c4f..."
 }
 ```
@@ -1204,7 +1217,7 @@ study_{uid}.zst
                       │                   │
                       │ POST /studies     │ Archive by key
                       ▼                   ▼
-                 ┌──────────┐       [download_url]
+                 ┌──────────┐       [signed URL, short TTL]
                  │ Backend  │
                  └────┬─────┘
                       │
@@ -1241,7 +1254,7 @@ study_{uid}.zst
 6. `Notification Gateway` читает `studies.new` из Kafka
 7. Gateway доставляет событие на мобильное устройство
 8. Мобилка проверяет флаг `downloading_auto`
-9. При `downloading_auto=true` скачивает архив по `download_url`
+9. При `downloading_auto=true` запрашивает signed URL и скачивает архив
 10. При `downloading_auto=false` только обновляет листинг доступных исследований
 11. Распаковывает, сохраняет локально
 12. Выполняет пре-рендеринг в фоне
@@ -1261,7 +1274,11 @@ Mobile App                    Backend                       S3
     │                            │                          │
     ├─── GET /studies/{id} ─────▶│                          │
     │                            │                          │
-    │◀─ Metadata + download_url ─┤                          │
+    │◀─ Metadata + can_download ─┤                          │
+    │                            │                          │
+    ├── GET /studies/{id}/download-link ───────────────────▶│
+    │                            │                          │
+    │◀──────────── signed URL ───┤                          │
     │                            │                          │
     ├────────────────────────────┼───────── Download ──────▶│
     │                            │                          │
@@ -1447,7 +1464,7 @@ dependencies {
 | CI/CD | GitHub CI |
 | Мониторинг | Prometheus + Grafana | 
 | Логи | ELK Stack | 
-| Трассировка | Jaeger | 
+| Трассировка | OpenTelemetry + Jaeger | 
 
 ---
 
@@ -1457,7 +1474,9 @@ dependencies {
 
 | Параметр | Целевое значение | Допустимое отклонение |
 |----------|------------------|----------------------|
-| Время от PACS до уведомления | < 5 минут | ±1 минута |
+| `time_to_available_study` (PACS → доступно в API) | < 5 минут | ±1 минута |
+| `time_to_available_report` (script → доступно в API) | < 2 минуты | ±30 секунд |
+| `time_to_available_surg_plan` (script → доступно в API) | < 2 минуты | ±30 секунд |
 | Время скачивания 100 МБ (4G) | < 30 секунд | ±5 секунд |
 | Время распаковки исследования | < 5 секунд | ±1 секунда |
 | Время пре-рендеринга КТ (350 срезов) | < 10 секунд | ±2 секунды |
@@ -1465,6 +1484,7 @@ dependencies {
 | Потребление RAM (мобилка) | < 200 МБ | ±50 МБ |
 | Потребление диска (мобилка) | Настраиваемый лимит | 1-4 ГБ |
 | API latency (p95) | < 200 мс | ±50 мс |
+| Задержка доставки событий (`event_delivery_latency`, p95) | < 10 секунд | ±3 секунды |
 | API requests per second | 1000 | - |
 
 ### 11.2. Надежность
@@ -1473,6 +1493,8 @@ dependencies {
 |----------|----------|
 | Время безотказной работы (SLA) | 99.9% |
 | Retry policy | 3 попытки, экспоненциальная задержка |
+| Успешная доставка уведомлений | > 99% |
+| Успешные загрузки исследований | > 97% |
 | Recovery time после сбоя | < 5 минут |
 | Целостность данных | Проверка хэшей SHA-256 |
 | Офлайн режим | Полная работа с загруженными данными |
@@ -1506,8 +1528,12 @@ dependencies {
 
 | Метрика | Цель | Как измеряется |
 |---------|------|----------------|
-| Время от PACS до мобилки | < 5 мин | Timestamp difference (script → mobile) |
+| `time_to_available_study` | < 5 мин | PACS ingest timestamp → study available via API |
+| `time_to_available_report` | < 2 мин | report ingest timestamp → report available via API |
+| `time_to_available_surg_plan` | < 2 мин | plan ingest timestamp → current plan available via API |
 | Время открытия исследования | Мгновенно для пользователя | Click → first image |
+| Успешная доставка уведомлений | > 99% | delivered notifications / total notifications |
+| Успешные загрузки исследований | > 97% | successful downloads / started downloads |
 | Активных пользователей (DAU) | - | Unique users per day |
 
 ### 12.2. Технические метрики (Prometheus)
@@ -1519,10 +1545,15 @@ study_upload_total{status="success|failed"}
 s3_upload_duration_seconds_bucket
 pdf_conversion_duration_seconds_bucket
 message_broker_publish_total{topic}
+notification_delivery_total{channel,status}
+notification_delivery_latency_seconds_bucket{channel}
 api_requests_total{endpoint, method, status}
 api_request_duration_seconds_bucket
 database_connection_pool_size
 database_query_duration_seconds_bucket
+time_to_available_study_seconds_bucket
+time_to_available_report_seconds_bucket
+time_to_available_surg_plan_seconds_bucket
 
 # Скрипт метрики
 pacs_query_duration_seconds_bucket
@@ -1535,12 +1566,21 @@ mobile_download_duration_seconds_bucket
 mobile_decompression_duration_seconds_bucket
 mobile_prerender_duration_seconds_bucket{modality}
 mobile_study_open_duration_seconds_bucket
+mobile_download_success_total{status}
 mobile_cache_hit_ratio
 mobile_memory_usage_mb
 mobile_storage_usage_mb
 ```
 
-### 12.3. Логирование
+### 12.3. End-to-end observability (OpenTelemetry)
+
+- Все сервисы (`script`, `backend`, `notification-gateway`, mobile telemetry backend) используют OpenTelemetry SDK.
+- В цепочке передается единый `trace_id` и `correlation_id` (`study_id`/`report_id`/`plan_id`).
+- Kafka сообщения содержат trace context в headers.
+- Ключевые спаны для исследования: `pacs_fetch` → `dicom_preprocess` → `s3_upload` → `backend_create_study` → `kafka_publish` → `notify_dispatch` → `mobile_download` → `mobile_open`.
+- Ключевые спаны для отчетов/планов: `script_submit` → `backend_persist_mongo` → `kafka_publish` → `notify_dispatch` → `mobile_fetch_api`.
+
+### 12.4. Логирование
 
 **Формат лога (JSON)**:
 ```json
@@ -1844,11 +1884,11 @@ func AuthMiddleware(verifier jwt.Verifier, public map[string]struct{}) gin.Handl
 }
 ```
 
-### 14.2. Доступ к S3 (Стабильный download URL)
+### 14.2. Доступ к S3 (short-lived signed URL)
 
 ```go
-// GET /api/v1/studies/:id/download
-func (h *Handlers) DownloadStudyArchive(c *gin.Context) {
+// GET /api/v1/studies/:id/download-link
+func (h *Handlers) GetStudyDownloadLink(c *gin.Context) {
     user := auth.MustUser(c)
     studyID := uuid.MustParse(c.Param("id"))
 
@@ -1863,23 +1903,23 @@ func (h *Handlers) DownloadStudyArchive(c *gin.Context) {
         return
     }
 
-    reader, contentType, err := h.storage.GetObject(c.Request.Context(), study.S3Key)
+    signedURL, ttlSec, err := h.storage.CreateSignedGetURL(c.Request.Context(), study.S3Key, 5*time.Minute)
     if err != nil {
         c.JSON(http.StatusBadGateway, gin.H{"error": "storage unavailable"})
         return
     }
-    defer reader.Close()
 
-    c.Header("Content-Type", contentType)
-    c.Header("Content-Disposition", "attachment; filename=study_"+study.StudyUID+".zst")
-    _, _ = io.Copy(c.Writer, reader)
+    c.JSON(http.StatusOK, gin.H{
+        "download_url": signedURL,
+        "expires_in_seconds": ttlSec,
+    })
 }
 ```
 
-**Политика download URL**:
-- URL стабилен и не имеет TTL для клиента
+**Политика signed URL**:
+- URL короткоживущий (например, 5 минут)
 - Доступ разрешен только авторизованным пользователям
-- URL работает, пока исследование хранится в S3 (до 7 дней)
+- После истечения TTL клиент запрашивает новый signed URL
 - Каждый доступ логируется в `audit_log`
 
 ### 14.3. Шифрование данных
@@ -2125,7 +2165,7 @@ async def cleanup_expired_studies():
 | **Kafka + Notification Gateway** | Надежная событийная доставка без прямого доступа мобилки к Kafka | Добавить отдельный сервис подтверждения доставки (delivery receipts) |
 | **`zstd` сжатие** | Лучший баланс скорости и размера для больших исследований | Динамически выбирать уровень сжатия по типу модальности |
 | **Единый архив в S3** | Упрощает хранение и повторную загрузку | Добавить optional split-архивы по сериям для очень больших кейсов |
-| **Стабильный `download_url`** | Повторная загрузка работает весь период хранения | Добавить short-link слой для удобства ротации URL маршрутов |
+| **Short-lived signed URL** | Повышает безопасность доступа к S3 | Добавить фоновый refresh URL при длинных скачиваниях |
 | **`manifest_version` + JSON Schema контракт** | Предсказуемая совместимость backend/iOS/Android | Автоматическая валидация схемы в CI перед публикацией |
 | **Пре-рендеринг на мобилке после распаковки** | Пользователь открывает исследование без ожидания анализа | Добавить warm-up кэша GPU/Metal/OpenGL при зарядке и Wi‑Fi |
 | **Хранение в S3 7 дней** | Баланс доступности и стоимости | Политики хранения по классам исследований (горячее/холодное) |
@@ -2150,6 +2190,6 @@ async def cleanup_expired_studies():
 | **C-FIND** | DICOM команда для поиска исследований |
 | **C-MOVE** | DICOM команда для перемещения исследований |
 | **Q/R** | Query/Retrieve - запрос и получение исследований |
-| **Download URL** | Стабильный URL API для скачивания архива исследования до его удаления из S3 |
+| **Signed URL** | Короткоживущий подписанный URL для безопасного скачивания архива из S3 |
 | **Message Broker** | Промежуточное звено для асинхронной доставки сообщений |
 | **Kafka** | Distributed event streaming platform для асинхронной доставки событий |
