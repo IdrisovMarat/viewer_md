@@ -149,16 +149,17 @@ flowchart LR
     script -->|Archive upload| s3
     script -->|POST studies/reports/plans| backend
 
-    backend -->|Studies metadata| pg
-    backend -->|Reports & plans| mongo
+    backend -->|studies metadata| pg
+    backend -->|reports & plans| mongo
+    backend -->|raw DICOM send| remotePACS
     backend -->|Domain events| kafka
     kafka --> notify
 
     doctor --> mobile
     notify -->|Push / In-app| mobile
-    mobile -->|GET studies/reports/plans| backend
-    mobile -->|GET /studies/{id}/download-remote_pacs| backend
-    backend -->|Temp download + decompress + raw DICOM send| remotePACS
+    mobile -->|GET /studies/reports/plans| backend
+    mobile -->|GET /studies/id/download-remote_pacs| backend
+    
     
 
     classDef actor fill:#1f2937,stroke:#94a3b8,color:#e5e7eb;
