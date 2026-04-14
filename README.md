@@ -87,13 +87,18 @@
 - `POST /api/v1/studies` — прием метаданных исследования от скрипта.
 - `GET /api/v1/studies` — список исследований для мобильного приложения.
 - `GET /api/v1/studies/{id}` — детали исследования.
-- `GET /api/v1/studies/{id}/download-link` — выдача short-lived signed `download_url`.
-- `GET /api/v1/studies/{id}/download` — совместимый endpoint (redirect на signed S3 URL).
-- `DELETE /api/v1/studies/{id}` — удаление исследования.
-- `POST /api/v1/reports` — загрузка отчета дежурства.
-- `GET /api/v1/reports` — список отчетов.
-- `POST /api/v1/plans` — загрузка плана операций.
-- `GET /api/v1/plans/current` — текущий план операций.
+- `GET /api/v1/studies/{id}/download-device` — скачивание на девайс по short-lived signed `download_url`.
+- `GET /api/v1/studies/{id}/download-remote_pacs` — скачивание из s3 на удаленный PACS по short-lived signed `download_url`.
+- `DELETE /api/v1/studies/{id}/device` — удаление исследования c девайса.
+
+- `POST /api/v1/reports` — загрузка отчета дежурства от скрипта.
+- `GET /api/v1/reports/current` — сегодняшний отчет за прошедшее дежурство.
+- `GET /api/v1/reports/{id}` — отчет дежурства за определенную дату.
+
+- `POST /api/v1/plans` — загрузка плана операций от скрипта.
+- `GET /api/v1/plans/current` — текущей недели план операций.
+- `GET /api/v1/plans/{id}` — операционный план за определенную неделю.
+
 - `GET /api/v1/user/settings` / `PUT /api/v1/user/settings` — настройки пользователя.
 
 
