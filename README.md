@@ -57,7 +57,7 @@
   - авто- или ручная загрузка архива;
   - распаковка, pre-render и быстрый локальный просмотр.
 
-## 4. Единая C4-схема приложения (Mermaid)
+### C4 схема приложения (Mermaid)
 
 ```mermaid
 %%{init: {'theme':'dark','themeVariables':{
@@ -112,24 +112,7 @@ flowchart LR
     class kafka,notify events;
 ```
 
-## 5. Observability и SLO
-
-- `OpenTelemetry` используется в `script`, `backend` и `notification gateway` с единым `trace_id`.
-- Основной end-to-end трейс для исследования: `pacs_fetch -> preprocess -> s3_upload -> backend_ingest -> kafka_publish -> notify -> mobile_download -> mobile_open`.
-- Бизнес-SLI:
-  - `time_to_available_study`;
-  - `time_to_available_report`;
-  - `time_to_available_surg_plan`;
-  - `% успешной доставки уведомлений`;
-  - `% успешных загрузок исследований`.
-- Технические SLO (целевые):
-  - `time_to_available_study < 5 мин`;
-  - `time_to_available_report < 2 мин`;
-  - `time_to_available_surg_plan < 2 мин`;
-  - `notification delivery success > 99%`;
-  - `download success > 97%`.
-
-## 6. Основные API endpoint'ы
+### Основные API endpoint'ы
 
 - `POST /api/v1/studies` — прием метаданных исследования от скрипта.
 - `GET /api/v1/studies` — список исследований для мобильного приложения.

@@ -1574,12 +1574,21 @@ mobile_storage_usage_mb
 
 ### 12.3. End-to-end observability (OpenTelemetry)
 
-- Все сервисы (`script`, `backend`, `notification-gateway`, mobile telemetry backend) используют OpenTelemetry SDK.
-- В цепочке передается единый `trace_id` и `correlation_id` (`study_id`/`report_id`/`plan_id`).
-- Kafka сообщения содержат trace context в headers.
-- Ключевые спаны для исследования: `pacs_fetch` → `dicom_preprocess` → `s3_upload` → `backend_create_study` → `kafka_publish` → `notify_dispatch` → `mobile_download` → `mobile_open`.
-- Ключевые спаны для отчетов/планов: `script_submit` → `backend_persist_mongo` → `kafka_publish` → `notify_dispatch` → `mobile_fetch_api`.
-
+- `OpenTelemetry` используется в `script`, `backend` и `notification gateway` с единым `trace_id`.
+- Основной end-to-end трейс для исследования: `pacs_fetch -> preprocess -> s3_upload -> backend_ingest -> kafka_publish -> notify -> mobile_download -> mobile_open`.
+- Бизнес-SLI:
+  - `time_to_available_study`;
+  - `time_to_available_report`;
+  - `time_to_available_surg_plan`;
+  - `% успешной доставки уведомлений`;
+  - `% успешных загрузок исследований`.
+- Технические SLO (целевые):
+  - `time_to_available_study < 5 мин`;
+  - `time_to_available_report < 2 мин`;
+  - `time_to_available_surg_plan < 2 мин`;
+  - `notification delivery success > 99%`;
+  - `download success > 97%`.
+  
 ### 12.4. Логирование
 
 **Формат лога (JSON)**:
