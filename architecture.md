@@ -1,24 +1,40 @@
-Описание сервиса в целом
+### 01/03/2026
+# Медицинское DICOM-приложение, техническое задание 
+
+• - FCM — Firebase Cloud Messaging (Google): push-уведомления для Android (и частично iOS через Firebase).
+  - APNS — Apple Push Notification service: официальный push-канал Apple для iOS.
+  - in-app — внутренние уведомления внутри самого приложения (баннер/бейдж/обновление списка), когда приложение уже открыто.
+
+  Как это работает вместе:
+
+  - сервер отправляет событие,
+  - через FCM/APNS “будит” устройство или показывает системное уведомление,
+  - приложение открывается/просыпается и делает нужные API-запросы,
+  - in-app обновляет интерфейс сразу внутри приложения.
+
+  Зачем все 3:
+
+  - FCM/APNS — доставка, когда приложение в фоне/закрыто,
+  - in-app — лучший UX, когда приложение уже на экране.
+
+# Описание сервиса в целом
 
 Система предназначена для быстрой и надежной доставки медицинских DICOM-исследований врачу на мобильное устройство без стриминга, с приоритетом мгновенного открытия уже загруженных данных. На больничном компьютере Python-скрипт автоматически (по расписанию) и вручную (через CLI) получает исследования из PACS, выполняет полный разбор DICOM и заранее рассчитывает все необходимые данные для просмотра (серии, порядок срезов, windowing, геометрию для MPR, контрольные суммы). После этого формируется единый архив исследования в формате `zstd`, который загружается в S3.
 
-Бекенд на Go принимает метаданные, хранит их в PostgreSQL, управляет доступом к архивам, а также публикует события о новых исследованиях, отчетах и планах операций в Kafka. Для мобильных клиентов используется отдельный слой `Notification Gateway`: он читает события из Kafka, фильтрует их по пользователю и доставляет уведомления в приложение через push/in-app канал. Мобильное приложение не подключается напрямую к Kafka.
+Бекенд на Go принимает метаданные, хранит данные исследований в PostgreSQL, управляет доступом к архивам, а также публикует события о новых исследованиях, отчетах и планах операций в Kafka. Отчеты о дежурстве и планы операций принимаются от скрипта через backend API и сохраняются в MongoDB, откуда отдаются в мобильное приложение через backend. Для мобильных клиентов используется отдельный слой `Notification Gateway`: он читает события из Kafka, фильтрует их по пользователю и доставляет уведомления в приложение через push/in-app канал. Мобильное приложение не подключается напрямую к Kafka.
 
 Если в настройках пользователя включен флаг `downloading_auto`, приложение автоматически скачивает архив по `download_url`, распаковывает его и подготавливает к просмотру в фоне. Если флаг выключен, исследование только появляется в листинге и загружается вручную по команде врача. После завершения подготовки пользователь получает уведомление, а исследование открывается мгновенно, без повторного тяжелого анализа DICOM на телефоне.
 
 Дополнительно система поддерживает отправку отчетов о дежурстве и недельных планов операций с больничного ПК на бэкенд и в мобильное приложение, а также операции управления исследованиями (повторное скачивание, удаление локальной копии, удаление из S3, отправка на удаленный PACS). Хранение архивов в S3 ограничено 7 днями, после чего выполняется автоматическая очистка.
 
-# Медицинское DICOM-приложение, техническое задание 
-
-## Версия 2.0
-### Дата: 01/03/2026
 
 ## Executive Summary
 
 - Система доставляет DICOM-исследования на мобильное устройство без стриминга, с офлайн-доступом.
 - Полный DICOM-парсинг и предрасчеты выполняются на больничном Python-скрипте до архивации.
 - Исследование упаковывается в единый `zstd`-архив с `manifest.json` и загружается в S3.
-- Бэкенд на Go хранит метаданные в PostgreSQL и управляет доступом к архивам.
+- Бэкенд на Go хранит метаданные исследований в PostgreSQL и управляет доступом к архивам.
+- Отчеты о дежурстве и планы операций идут по цепочке `Script -> Backend -> MongoDB -> Mobile App`.
 - События публикуются в Kafka, мобильные клиенты не подключаются к Kafka напрямую.
 - `Notification Gateway` читает Kafka и доставляет события на устройства через FCM/APNS/in-app.
 - При `downloading_auto=true` архив скачивается автоматически; при `false` — только ручная загрузка из листинга.
@@ -34,7 +50,7 @@
 
 Ключевой принцип — не нагружать телефон тяжелой обработкой. Весь сложный этап мы переносим на больничный компьютер: Python-скрипт получает исследование из PACS, разбирает DICOM, заранее рассчитывает данные для просмотра (включая порядок срезов, параметры windowing и геометрию для MPR) и формирует готовый архив.
 
-Далее бэкенд на Go сохраняет метаданные в PostgreSQL, хранит архив в S3 и публикует событие в Kafka. Отдельный `Notification Gateway` читает эти события и доставляет их на мобильные устройства через push/in-app каналы. Это надежная и безопасная модель: мобильное приложение не работает с Kafka напрямую.
+Далее бэкенд на Go сохраняет метаданные в PostgreSQL, хранит архив в S3 и публикует событие в Kafka. Для отчетов и планов операций backend сохраняет данные в MongoDB и отдает их мобильному приложению через API. Отдельный `Notification Gateway` читает события и доставляет их на мобильные устройства через push/in-app каналы. Это надежная и безопасная модель: мобильное приложение не работает с Kafka напрямую.
 
 Если у пользователя включен автоматический режим, архив загружается и подготавливается в фоне. Если выключен — исследование появляется в списке и скачивается вручную. В обоих случаях после подготовки исследование открывается сразу, без повторного анализа DICOM на телефоне.
 
@@ -136,12 +152,17 @@ python script.py upload --plan
 ### 2.2. Хранение данных
 
 #### 2.2.1. S3 (Yandex Storage)
-- **Что хранит**: Сжатые dicom исследования, PDF отчеты, планы операций на неделю
+- **Что хранит**: Сжатые DICOM-исследования
 - **Политика хранения**: 7 дней (авто-очистка)
 - **Доступ**: Через стабильный `download_url` бэкенда (валиден весь срок жизни объекта в S3)
 
 #### 2.2.2. База данных бэкенда (PostgreSQL)
-- **Что хранит**: Метаданные, предобработанные данные, пользователей
+- **Что хранит**: Метаданные и предобработанные данные исследований, пользователей
+
+#### 2.2.3. Документы (MongoDB)
+- **Что хранит**: Отчеты о дежурстве и планы операций
+- **Путь данных**: Скрипт отправляет JSON в backend API, backend сохраняет в MongoDB
+- **Доступ для мобилки**: Через backend endpoints `GET /api/v1/reports` и `GET /api/v1/plans/current`
 
 ### 2.3. Бекенд (API сервер)
 
@@ -229,52 +250,55 @@ python script.py upload --plan
 
 ``` bash
 ┌──────────────────────────────────────────────────────────────┐
-│                    БОЛЬНИЧНЫЙ КОМПЬЮТЕР                        │
+│                    БОЛЬНИЧНЫЙ КОМПЬЮТЕР                      │
 ├──────────────────────────────────────────────────────────────┤
-│  Python Script                                                │
-│  ├── PACS Connector (DICOM Q/R, C-STORE)                    │
-│  ├── DICOM Parser (pydicom, полный парсинг)                 │
-│  ├── Data Packager (zstd компрессия)                        │
-│  ├── Report Generator (отчеты о дежурстве)                  │
-│  ├── Plan Manager (планы операций)                          │
-│  └── CLI Handler (ручные команды)                           │
+│  Python Script                                               │
+│  ├── PACS Connector (DICOM Q/R, C-STORE)                     │
+│  ├── DICOM Parser (pydicom, полный парсинг)                  │
+│  ├── Data Packager (zstd компрессия)                         │
+│  ├── Report Generator (отчеты о дежурстве)                   │
+│  ├── Plan Manager (планы операций)                           │
+│  └── CLI Handler (ручные команды)                            │
 └──────────────────────────────────────────────────────────────┘
                               │
                               │ HTTPS API
                               ↓
 ┌──────────────────────────────────────────────────────────────┐
-│                         БЕКЕНД                                │
+│                         БЕКЕНД                               │
 ├──────────────────────────────────────────────────────────────┤
 │  API Gateway (Golang)                                        │
-│  ├── POST /api/v1/studies (прием метаданных)               │
-│  ├── GET  /api/v1/studies (список для мобилки)             │
-│  ├── GET  /api/v1/studies/{id} (детали + download_url)     │
-│  ├── GET  /api/v1/studies/{id}/download (скачивание)       │
-│  ├── DELETE /api/v1/studies/{id} (удаление из S3)          │
-│  ├── POST /api/v1/reports (прием отчетов)                  │
-│  ├── GET  /api/v1/reports (список)                         │
-│  ├── POST /api/v1/plans (прием планов)                     │
-│  ├── GET  /api/v1/user/settings (настройки)                │
-│  └── PUT  /api/v1/user/settings (обновление настроек)      │
+│  ├── POST /api/v1/studies (прием метаданных)                 │
+│  ├── GET  /api/v1/studies (список для мобилки)               │
+│  ├── GET  /api/v1/studies/{id} (детали + download_url)       │
+│  ├── GET  /api/v1/studies/{id}/download (скачивание)         │
+│  ├── DELETE /api/v1/studies/{id} (удаление из S3)            │
+│  ├── POST /api/v1/reports (прием отчетов)                    │
+│  ├── GET  /api/v1/reports (список)                           │
+│  ├── POST /api/v1/plans (прием планов)                       │
+│  ├── GET  /api/v1/user/settings (настройки)                  │
+│  └── PUT  /api/v1/user/settings (обновление настроек)        │
 │                                                              │
 │  Services                                                    │
-│  ├── Metadata Service (работа с БД)                         │
-│  ├── Download URL Service (стабильные URL)                  │
-│  ├── PDF Converter (отчеты TXT → PDF)                       │
-│  ├── Cleanup Scheduler (очистка S3)                         │
-│  └── Message Producer (отправка в брокер)                   │
+│  ├── Metadata Service (работа с БД)                          │
+│  ├── Download URL Service (стабильные URL)                   │
+│  ├── PDF Converter (отчеты TXT → PDF)                        │
+│  ├── Cleanup Scheduler (очистка S3)                          │
+│  └── Message Producer (отправка в брокер)                    │
 │                                                              │
 │  Database (PostgreSQL)                                       │
-│  └── Tables: studies, reports, plans, users                 │
+│  └── Tables: studies, users, audit_log                       │
+│                                                              │
+│  Document Store (MongoDB)                                    │
+│  └── Collections: reports, surgery_plans                     │
 └──────────────────────────────────────────────────────────────┘
                               │
                     ┌─────────┴─────────┐
                     ↓                   ↓
         ┌──────────────────┐  ┌──────────────────┐
-        │  Yandex S3        │  │ Message Broker   │
-        │  ├── studies/     │  │ (Kafka)          │
-        │  ├── reports/     │  │ ├── studies.new  │
-        │  └── plans/       │  │ ├── reports.new  │
+        │  Yandex S3       │  │ Message Broker   │
+        │  └── studies/    │  │ (Kafka)          │
+        │                  │  │ ├── studies.new  │
+        │                  │  │ ├── reports.new  │
         └──────────────────┘  │ └── plans.new    │
                     ↑         └──────────────────┘
                     │                   │
@@ -293,25 +317,25 @@ python script.py upload --plan
 │                    МОБИЛЬНОЕ ПРИЛОЖЕНИЕ                      │
 ├──────────────────────────────────────────────────────────────┤
 │  Data Layer                                                  │
-│  ├── Notification Client (получение событий)                │
-│  ├── Retrofit (API calls)                                   │
-│  ├── Download Manager (загрузка из S3)                      │
-│  ├── Zstd Decompressor (распаковка)                         │
-│  ├── Local Storage (Room + файловая система)               │
-│  └── Render Engine (OpenGL/Metal)                           │
+│  ├── Notification Client (получение событий)                 │
+│  ├── Retrofit (API calls)                                    │
+│  ├── Download Manager (загрузка из S3)                       │
+│  ├── Zstd Decompressor (распаковка)                          │
+│  ├── Local Storage (Room + файловая система)                 │
+│  └── Render Engine (OpenGL/Metal)                            │
 │                                                              │
 │  Domain Layer                                                │
-│  ├── AutoDownloadService (фоновый сервис)                   │
-│  ├── PreRenderUseCase (пре-рендеринг)                       │
-│  ├── SendToPACSUseCase (отправка на PACS)                   │
-│  └── NotificationManager (push + in-app)                    │
+│  ├── AutoDownloadService (фоновый сервис)                    │
+│  ├── PreRenderUseCase (пре-рендеринг)                        │
+│  ├── SendToPACSUseCase (отправка на PACS)                    │
+│  └── NotificationManager (push + in-app)                     │
 │                                                              │
 │  Presentation Layer                                          │
-│  ├── StudiesListFragment (список исследований)             │
-│  ├── StudyDetailFragment (просмотр с MPR)                   │
-│  ├── ReportsListFragment (список отчетов)                  │
-│  ├── PlansListFragment (список планов)                     │
-│  └── SettingsFragment (настройки)                          │
+│  ├── StudiesListFragment (список исследований)               │
+│  ├── StudyDetailFragment (просмотр с MPR)                    │
+│  ├── ReportsListFragment (список отчетов)                    │
+│  ├── PlansListFragment (список планов)                       │
+│  └── SettingsFragment (настройки)                            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -506,150 +530,8 @@ func RateLimitMiddleware(rps int, burst int) gin.HandlerFunc
 
 ### 5.3. Мобильное приложение (Kotlin/Swift)
 
-#### 5.3.1. Android - Data Layer
-
-```kotlin
-// data/repositories/
-class StudyRepositoryImpl(
-    private val api: StudyApi,
-    private val localDb: StudyDao,
-    private val downloadManager: DownloadManager,
-    private val decompressor: ZstdDecompressor
-) : StudyRepository {
-    override suspend fun getStudiesList(): List<Study>
-    override suspend fun downloadStudy(studyId: String): Result<Unit>
-    override suspend fun getLocalStudy(studyId: String): LocalStudy?
-    override suspend fun deleteLocalStudy(studyId: String)
-}
-
-// data/datasources/
-class RemoteDataSource(private val api: StudyApi)
-class LocalDataSource(private val dao: StudyDao, private val fileStorage: FileStorage)
-
-// data/network/
-interface StudyApi {
-    @GET("/api/v1/studies")
-    suspend fun getStudies(): List<StudyDTO>
-    
-    @GET("/api/v1/studies/{id}")
-    suspend fun getStudyDetails(@Path("id") id: String): StudyDetailsDTO
-}
-```
-
-#### 5.3.2. Android - Domain Layer
-
-```kotlin
-// domain/usecases/
-class AutoDownloadUseCase(
-    private val repository: StudyRepository,
-    private val settingsRepository: SettingsRepository,
-    private val notificationManager: NotificationManager
-) {
-    suspend operator fun invoke(studyId: String) {
-        if (settingsRepository.getDownloadingAutoEnabled()) {
-            repository.downloadStudy(studyId)
-            notificationManager.showDownloadComplete(studyId)
-        }
-    }
-}
-
-class PreRenderUseCase(
-    private val renderEngine: RenderEngine
-) {
-    suspend operator fun invoke(studyId: String) {
-        val study = repository.getLocalStudy(studyId)
-        when (study.modality) {
-            "CT" -> renderEngine.preRenderCT(study)
-            "XA" -> renderEngine.preRenderXA(study)
-            "XR" -> renderEngine.preRenderXR(study)
-        }
-    }
-}
-
-class SendToPACSUseCase(
-    private val pacsClient: DICOMClient,
-    private val repository: StudyRepository
-) {
-    suspend operator fun invoke(studyId: String, config: PACSConfig): Result<Unit>
-}
-```
-
-#### 5.3.3. Android - Presentation Layer
-
-```kotlin
-// presentation/viewmodels/
-class StudiesViewModel(
-    private val getStudiesUseCase: GetStudiesUseCase,
-    private val autoDownloadUseCase: AutoDownloadUseCase,
-    private val settingsRepository: SettingsRepository
-) : ViewModel() {
-    val studies = MutableStateFlow<List<Study>>(emptyList())
-    val autoDownloadEnabled = settingsRepository.getAutoDownloadFlow()
-    
-    fun loadStudies() {
-        viewModelScope.launch {
-            studies.value = getStudiesUseCase()
-        }
-    }
-    
-    fun onNewStudyNotification(studyId: String) {
-        viewModelScope.launch {
-            autoDownloadUseCase(studyId)
-        }
-    }
-}
-
-// presentation/fragments/
-class StudiesListFragment : Fragment() {
-    private val viewModel: StudiesViewModel by viewModels()
-    private lateinit var adapter: StudiesAdapter
-    
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        setupRecyclerView()
-        observeStudies()
-        setupBrokerListener()
-    }
-    
-    private fun setupBrokerListener() {
-        NotificationClient.subscribe("user/${userId}/studies.new") { message ->
-            val studyId = message.getString("study_id")
-            viewModel.onNewStudyNotification(studyId)
-        }
-    }
-}
-```
-
-#### 5.3.4. Render Engine (OpenGL)
-
-```kotlin
-// render/CTRenderer.kt
-class CTRenderer(private val glSurfaceView: GLSurfaceView) {
-    private var shaderProgram: Int = 0
-    private var textureId: Int = 0
-    
-    fun preRender(study: LocalStudy) {
-        // Создаем текстуры для всех срезов
-        for (slice in study.slices) {
-            val texture = createTexture(slice.pixelData)
-            cacheTexture(slice.index, texture)
-        }
-        
-        // Готовим MPR текстуры
-        prepareMPRTextures(study)
-    }
-    
-    fun renderSlice(sliceIndex: Int, windowCenter: Int, windowWidth: Int) {
-        val texture = getTexture(sliceIndex)
-        val shader = getWindowingShader(windowCenter, windowWidth)
-        
-        glUseProgram(shader)
-        glBindTexture(GL_TEXTURE_2D, texture)
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
-    }
-}
-```
-
----
+#### 5.3.1. Android 
+#### 5.3.2. IOS Swift
 
 ## 6. База данных
 
@@ -677,32 +559,6 @@ CREATE TABLE studies (
     created_at TIMESTAMP DEFAULT NOW(),
     expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '7 days',
     status VARCHAR(32) DEFAULT 'active'
-);
-
--- Таблица отчетов
-CREATE TABLE reports (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    report_date DATE NOT NULL,
-    doctor_name VARCHAR(255) NOT NULL,
-    patients_count INTEGER,
-    emergencies INTEGER,
-    content JSONB,
-    s3_pdf_url VARCHAR(512),
-    original_txt TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
--- Таблица планов операций
-CREATE TABLE surgery_plans (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    week_number INTEGER NOT NULL,
-    year INTEGER NOT NULL,
-    plan_data JSONB NOT NULL,
-    file_format VARCHAR(10) DEFAULT 'json',
-    version INTEGER DEFAULT 1,
-    s3_key VARCHAR(512),
-    created_at TIMESTAMP DEFAULT NOW(),
-    UNIQUE(week_number, year, version)
 );
 
 -- Таблица пользователей
@@ -745,12 +601,6 @@ CREATE INDEX CONCURRENTLY idx_studies_modality
 CREATE INDEX CONCURRENTLY idx_studies_status
     ON studies(status);
 
-CREATE INDEX CONCURRENTLY idx_reports_date
-    ON reports(report_date DESC);
-
-CREATE INDEX CONCURRENTLY idx_plans_week
-    ON surgery_plans(year, week_number, version DESC);
-
 CREATE INDEX CONCURRENTLY idx_audit_user
     ON audit_log(user_id);
 
@@ -759,6 +609,46 @@ CREATE INDEX CONCURRENTLY idx_audit_timestamp
     
 CREATE INDEX CONCURRENTLY idx_audit_action_time 
     ON audit_log(action, timestamp);
+```
+
+### 6.2. Схема MongoDB (документы)
+
+```javascript
+// Коллекция отчетов
+db.reports.createIndex({ report_date: -1 })
+db.reports.createIndex({ created_at: -1 })
+
+// Документ отчета (пример)
+{
+  _id: ObjectId("..."),
+  report_date: ISODate("2026-02-14"),
+  doctor_name: "Иванов И.И.",
+  patients_count: 12,
+  emergencies: 3,
+  content: {
+    summary: "...",
+    procedures: []
+  },
+  original_txt: "...",
+  created_at: ISODate("2026-02-14T09:00:00Z")
+}
+
+// Коллекция планов операций
+db.surgery_plans.createIndex({ year: 1, week_number: 1, version: -1 }, { unique: true })
+db.surgery_plans.createIndex({ created_at: -1 })
+
+// Документ плана операций (пример)
+{
+  _id: ObjectId("..."),
+  week_number: 8,
+  year: 2026,
+  version: 1,
+  plan_data: {
+    monday: [],
+    tuesday: []
+  },
+  created_at: ISODate("2026-02-14T10:00:00Z")
+}
 ```
 
 ---
@@ -1308,42 +1198,38 @@ study_{uid}.zst
 ### 9.1. Автоматическая загрузка (Флаг ON)
 
 ```
-┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
-│  PACS    │────▶│  Script  │────▶│   S3     │     │ Backend  │
-└──────────┘     └──────────┘     └──────────┘     └──────────┘
-                                       │                │
-                                       │                │
-                                       ▼                │
-                                  [Archive]             │
-                                       │                │
-                                       │                │
-                                       └───────────────▶│
-                                                        │
-                                                        ▼
-                                                  [Database]
-                                                        │
-                                                        ▼
-                                               [Message Broker]
-                                                        │
-                                                        │ Kafka event
-                                                        ▼
-                                             [Notification Gateway]
-                                                        │
-                                                        │ Push/In-App event
-                                                        ▼
-                  ┌──────────────────────────────────────────┐
-                  │         Mobile App (AutoDownload)        │
-                  └──────────────────────────────────────────┘
-                      │                                
-                      │                                
-                      ▼                                
-                 [Download]  ────▶ [Decompress] ────▶ [Pre-render]
-                                                          │
-                                                          ▼
-                                                 [Push Notification]
-                                                          │
-                                                          ▼
-                                                 [Instant Open]
+┌──────────┐     ┌──────────┐        ┌──────────┐
+│  PACS    │────▶│  Script  │───────▶│   S3     │
+└──────────┘     └────┬─────┘        └────┬─────┘
+                      │                   │
+                      │ POST /studies     │ Archive by key
+                      ▼                   ▼
+                 ┌──────────┐       [download_url]
+                 │ Backend  │
+                 └────┬─────┘
+                      │
+                      ▼
+                 [PostgreSQL]
+                      │
+                      ▼
+                [Message Broker]
+                      │ Kafka event
+                      ▼
+             [Notification Gateway]
+                      │ Push/In-App event
+                      ▼
+      ┌──────────────────────────────────────────┐
+      │         Mobile App (AutoDownload)        │
+      └──────────────────────────────────────────┘
+            │
+            ▼
+       [Download] ───▶ [Decompress] ───▶ [Pre-render]
+                                             │
+                                             ▼
+                                    [Push Notification]
+                                             │
+                                             ▼
+                                      [Instant Open]
 ```
 
 **Шаги**:
@@ -1375,7 +1261,7 @@ Mobile App                    Backend                       S3
     │                            │                          │
     ├─── GET /studies/{id} ─────▶│                          │
     │                            │                          │
-    │◀── Metadata + download_url ─┤                          │
+    │◀─ Metadata + download_url ─┤                          │
     │                            │                          │
     ├────────────────────────────┼───────── Download ──────▶│
     │                            │                          │
@@ -1391,53 +1277,56 @@ Mobile App                    Backend                       S3
 ### 9.3. Отправка на удаленный PACS
 
 ```
-Mobile App                    Backend                S3              Remote PACS
-    │                            │                   │                    │
-    │ (User clicks Send to PACS) │                   │                    │
-    │                            │                   │                    │
-    ├── GET /studies/{id}/download ─▶│                │                    │
-    │                            │                   │                    │
-    │◀── Stable archive URL ─────┤                   │                    │
-    │                            │                   │                    │
-    ├────────────────────────────┼─── Download ─────▶│                    │
-    │◀───────────────────────────│──── Archive ──────┤                    │
-    │                            │                   │                    │
-    │◀───────────────────────────┼─── DICOM files ───┤                    │
-    │                            │                   │                    │
-    ├─── Decompress ─────────────┤                   │                    │
-    ├─── DICOM C-STORE ──────────┼───────────────────┼───────────────────▶│
-    │                            │                   │                    │
-    │◀── C-STORE Response ───────┼───────────────────┼────────────────────┤
-    │                            │                   │                    │
-    └─── Show result ────────────┘                   │                    │
+Mobile App                        Backend                S3              Remote PACS
+    │                                │                   │                    │
+    │ (User clicks Send to PACS)     │                   │                    │
+    │                                │                   │                    │
+    ├── GET /studies/{id}/download ─▶│                   │                    │
+    │                                │                   │                    │
+    │                                │                   │                    │
+    │                                │◀─── Archive ──────┤                    │
+    │                                │                   │                    │
+    │                                │─── Decompress ────┤                    │
+    │                                │                   │                    │
+    │                                │─ raw DICOM files──│───────────────────▶│
+    │                                │                   │                    │
+    │◀── Response Notification───-───┼───────────────────┼────────────────────┤
+    │                                │                   │                    │
+    │                                │                   │                    │
 ```
 
 ### 9.4. Отчет о дежурстве / план операций
 
 ```
-Script                    Backend                   Mongo                Mobile
-    │                         │                       │                   │
-    ├─── POST /reports ──────▶│                       │                   │
-    │   (JSON)                │                       │                   │
-    │                         │                       │                   │
-    │                         │                       │                   │
-    │                         │                       │                   │
-    │                         │                       │                   │
-    │                         │       (JSON)          │                   │
-    │                         ├── Save to Database ──▶│                   │
-    │                         │                       │                   │
-    │                         ├─── Publish to Broker ─┼──────────────────▶│
-    │                         │                       │   (Kafka event)   │
-    │                         │                       │     [Notify]      │
-    │                         │                       │                   │
-    │                         │                       │                   │
-    │                         │                       │                   │
-    │                         │                       │                   │
-    │                         │                       │◀── GET /reports ──┤
-    │                         │                       │                   │
-    │                         │                       ├──  json report ──▶│
-    │                         │                       │                   │
+Script                    Backend                   MongoDB              Mobile
+    │                         │                        │                   │
+    ├── POST /reports ───────▶│                        │                   │
+    │   (JSON report)         ├── insert report ──────▶│                   │
+    │                         │                        │                   │
+    ├── POST /plans ─────────▶│                        │                   │
+    │   (JSON plan)           ├── insert plan ────────▶│                   │
+    │                         │                        │                   │
+    │                         ├── publish reports.new ─┼──────────────────▶│
+    │                         ├── publish plans.new ───┼──────────────────▶│
+    │                         │      (Kafka notify)    │                   │
+    │                         │                        │                   │
+    │                         │◀──── GET /reports ─────────────────────────┤
+    │                         ├── find reports ───────▶│                   │
+    │                         │◀── reports documents ──┤                   │
+    │                         ├── JSON reports ───────────────────────────▶│
+    │                         │                        │                   │
+    │                         │◀─ GET /plans/current ──────────────────────┤
+    │                         ├── find current plan ──▶│                   │
+    │                         │◀── plan document ──────┤                   │
+    │                         ├── JSON current plan ──────────────────────▶│
 ```
+
+**Логика**:
+1. Скрипт отправляет отчеты и планы операций в backend (`POST /reports`, `POST /plans`).
+2. Backend сохраняет документы в MongoDB (`reports`, `surgery_plans`).
+3. Backend публикует `reports.new` и `plans.new` в Kafka для уведомления мобильного клиента.
+4. Мобильное приложение получает уведомление и запрашивает данные через backend API.
+5. Backend читает MongoDB и возвращает отчеты/планы мобильному приложению.
 
 ---
 
@@ -1476,7 +1365,8 @@ weasyprint==60.1
 | Язык | Golang | 1.23+ | Высокая производительность, простая эксплуатация |
 | HTTP Framework | Gin | 1.10+ | Легковесный роутинг и middleware |
 | ORM/SQL | sqlx + squirrel | - | Явный SQL-контроль и простые query-builder паттерны |
-| База данных | PostgreSQL | 14+ | Надежность, JSONB поддержка |
+| База данных (исследования) | PostgreSQL | 14+ | Надежность, JSONB поддержка |
+| База данных (отчеты/планы) | MongoDB | 6.0+ | Гибкая документная модель для JSON-документов |
 | Брокер | Apache Kafka | 3.7+ | Высокая пропускная способность и устойчивость |
 | Notification Gateway | Go service + FCM/APNS adapters | - | Доставка Kafka событий на мобильные устройства |
 | S3 клиент | AWS SDK for Go v2 | 1.30+ | Совместимость с S3 API |
@@ -2113,7 +2003,7 @@ async def cleanup_expired_studies():
 
 **Цель**: Базовая рабочая система
 
-- Настройка инфраструктуры (S3, PostgreSQL, Kafka)
+- Настройка инфраструктуры (S3, PostgreSQL, MongoDB, Kafka)
 - Больничный скрипт: выгрузка КТ мозга
 - Сжатие `zstd`, загрузка архивов в S3
 - Бекенд: прием метаданных и сохранение в БД
