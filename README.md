@@ -2,7 +2,6 @@
 
 Платформа для быстрой доставки медицинских DICOM-исследований врачу на мобильное устройство с мгновенным открытием уже загруженных данных и поддержкой клинической отчетности.
 
-
 # Схема приложения
 
 ```bash
@@ -83,6 +82,21 @@
   - авто- или ручная загрузка архива;
   - распаковка, pre-render и быстрый локальный просмотр.
 
+### Основные API endpoint'ы
+
+- `POST /api/v1/studies` — прием метаданных исследования от скрипта.
+- `GET /api/v1/studies` — список исследований для мобильного приложения.
+- `GET /api/v1/studies/{id}` — детали исследования.
+- `GET /api/v1/studies/{id}/download-link` — выдача short-lived signed `download_url`.
+- `GET /api/v1/studies/{id}/download` — совместимый endpoint (redirect на signed S3 URL).
+- `DELETE /api/v1/studies/{id}` — удаление исследования.
+- `POST /api/v1/reports` — загрузка отчета дежурства.
+- `GET /api/v1/reports` — список отчетов.
+- `POST /api/v1/plans` — загрузка плана операций.
+- `GET /api/v1/plans/current` — текущий план операций.
+- `GET /api/v1/user/settings` / `PUT /api/v1/user/settings` — настройки пользователя.
+
+
 ### C4 схема приложения (Mermaid)
 
 ```mermaid
@@ -137,17 +151,3 @@ flowchart LR
     class s3,pg,mongo data;
     class kafka,notify events;
 ```
-
-### Основные API endpoint'ы
-
-- `POST /api/v1/studies` — прием метаданных исследования от скрипта.
-- `GET /api/v1/studies` — список исследований для мобильного приложения.
-- `GET /api/v1/studies/{id}` — детали исследования.
-- `GET /api/v1/studies/{id}/download-link` — выдача short-lived signed `download_url`.
-- `GET /api/v1/studies/{id}/download` — совместимый endpoint (redirect на signed S3 URL).
-- `DELETE /api/v1/studies/{id}` — удаление исследования.
-- `POST /api/v1/reports` — загрузка отчета дежурства.
-- `GET /api/v1/reports` — список отчетов.
-- `POST /api/v1/plans` — загрузка плана операций.
-- `GET /api/v1/plans/current` — текущий план операций.
-- `GET /api/v1/user/settings` / `PUT /api/v1/user/settings` — настройки пользователя.
