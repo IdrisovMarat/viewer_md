@@ -1,59 +1,29 @@
 ### 01/03/2026
 # Медицинское DICOM-приложение, техническое задание 
 
-#C4 схема приложения (Mermaid)
+# Схема приложения
 
-```mermaid
-%%{init: {'theme':'dark','themeVariables':{
-  'fontFamily':'Inter,Segoe UI,Arial',
-  'fontSize':'14px',
-  'lineColor':'#94A3B8',
-  'primaryTextColor':'#E2E8F0'
-}}}%%
-flowchart LR
-    doctor["👨‍⚕️ Doctor"]
-    pacs["🏥 PACS"]
+```
+                                        ┌──────────┐        ┌──────────┐        ┌──────────┐
+                                        │  PACS    │───────▶│  Script  │───────▶│    S3    │
+                                        └──────────┘        └────┬─────┘        └────┬─────┘
+                                                                 │                   │
+                                                                 │ POST /studies     │ 
+                                                                 │ POST /reports     │
+                                                                 │ POST /plans       │
+                                                                 ▼                   │
+┌──────────────────────────────┐  GET studies/reports/plans ┌──────────┐             │
+│ Mobile App (Auto/Manual)     │───────────────────────────▶│ Backend  │─────────────┘
+└──────────────────────────────┘                            └────┬─────┘   
+                │                                                │
+push/in-app     │                                ┌───────────────┼───────────────┐
+                │                                ▼               ▼               ▼                 
+    ┌──────────────────────┐                ┌──────────┐      ┌──────────┐    ┌──────────┐    
+    │ Notification Gateway │                │  Kafka   │      │PostgreSQL│    │ MongoDB  │    
+    └──────────────────────┘                │ events   │      │ studies  │    │reports/  │   
+                                            └──────────┘      │ users    │    │ plans    │    
+                                                              └──────────┘    └──────────┘                               
 
-    subgraph hospital["Hospital Workstation"]
-      script["Python Script\nDICOM preprocessing + report/plan sender"]
-    end
-
-    subgraph platform["Medical Viewer Platform"]
-      backend["Backend API (Go)"]
-      kafka["Kafka"]
-      notify["Notification Gateway"]
-      s3["S3\nStudy archives"]
-      pg["PostgreSQL\nStudies metadata"]
-      mongo["MongoDB\nReports & plans"]
-    end
-
-    subgraph mobile_sys["Mobile"]
-      mobile["Mobile App (iOS/Android)"]
-    end
-
-    pacs -->|DICOM| script
-    script -->|Archive upload| s3
-    script -->|POST studies/reports/plans| backend
-
-    backend -->|Studies metadata| pg
-    backend -->|Reports & plans| mongo
-    backend -->|Domain events| kafka
-    kafka --> notify
-
-    doctor --> mobile
-    notify -->|Push / In-app| mobile
-    mobile -->|GET studies/reports/plans| backend
-    
-
-    classDef actor fill:#1f2937,stroke:#94a3b8,color:#e5e7eb;
-    classDef core fill:#1e3a8a,stroke:#93c5fd,color:#eff6ff;
-    classDef data fill:#064e3b,stroke:#6ee7b7,color:#ecfdf5;
-    classDef events fill:#4c1d95,stroke:#c4b5fd,color:#f5f3ff;
-
-    class doctor,pacs actor;
-    class script,backend,mobile core;
-    class s3,pg,mongo data;
-    class kafka,notify events;
 ```
 
 # Описание сервиса в целом
@@ -308,9 +278,9 @@ python script.py upload --plan
 │  API Gateway (Golang)                                        │
 │  ├── POST /api/v1/studies (прием метаданных)                 │
 │  ├── GET  /api/v1/studies (список для мобилки)               │
-│  ├── GET  /api/v1/studies/{id} (детали исследования)          │
+│  ├── GET  /api/v1/studies/{id} (детали исследования)         │
 │  ├── GET  /api/v1/studies/{id}/download-link (signed URL)    │
-│  ├── GET  /api/v1/studies/{id}/download (redirect в S3)       │
+│  ├── GET  /api/v1/studies/{id}/download (redirect в S3)      │
 │  ├── DELETE /api/v1/studies/{id} (удаление из S3)            │
 │  ├── POST /api/v1/reports (прием отчетов)                    │
 │  ├── GET  /api/v1/reports (список)                           │
@@ -355,27 +325,6 @@ python script.py upload --plan
                     │                   ↓
 ┌──────────────────────────────────────────────────────────────┐
 │                    МОБИЛЬНОЕ ПРИЛОЖЕНИЕ                      │
-├──────────────────────────────────────────────────────────────┤
-│  Data Layer                                                  │
-│  ├── Notification Client (получение событий)                 │
-│  ├── Retrofit (API calls)                                    │
-│  ├── Download Manager (загрузка из S3)                       │
-│  ├── Zstd Decompressor (распаковка)                          │
-│  ├── Local Storage (Room + файловая система)                 │
-│  └── Render Engine (OpenGL/Metal)                            │
-│                                                              │
-│  Domain Layer                                                │
-│  ├── AutoDownloadService (фоновый сервис)                    │
-│  ├── PreRenderUseCase (пре-рендеринг)                        │
-│  ├── SendToPACSUseCase (отправка на PACS)                    │
-│  └── NotificationManager (push + in-app)                     │
-│                                                              │
-│  Presentation Layer                                          │
-│  ├── StudiesListFragment (список исследований)               │
-│  ├── StudyDetailFragment (просмотр с MPR)                    │
-│  ├── ReportsListFragment (список отчетов)                    │
-│  ├── PlansListFragment (список планов)                       │
-│  └── SettingsFragment (настройки)                            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
