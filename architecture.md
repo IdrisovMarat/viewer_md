@@ -1,21 +1,60 @@
 ### 01/03/2026
 # Медицинское DICOM-приложение, техническое задание 
 
-• - FCM — Firebase Cloud Messaging (Google): push-уведомления для Android (и частично iOS через Firebase).
-  - APNS — Apple Push Notification service: официальный push-канал Apple для iOS.
-  - in-app — внутренние уведомления внутри самого приложения (баннер/бейдж/обновление списка), когда приложение уже открыто.
+#C4 схема приложения (Mermaid)
 
-  Как это работает вместе:
+```mermaid
+%%{init: {'theme':'dark','themeVariables':{
+  'fontFamily':'Inter,Segoe UI,Arial',
+  'fontSize':'14px',
+  'lineColor':'#94A3B8',
+  'primaryTextColor':'#E2E8F0'
+}}}%%
+flowchart LR
+    doctor["👨‍⚕️ Doctor"]
+    pacs["🏥 PACS"]
 
-  - сервер отправляет событие,
-  - через FCM/APNS “будит” устройство или показывает системное уведомление,
-  - приложение открывается/просыпается и делает нужные API-запросы,
-  - in-app обновляет интерфейс сразу внутри приложения.
+    subgraph hospital["Hospital Workstation"]
+      script["Python Script\nDICOM preprocessing + report/plan sender"]
+    end
 
-  Зачем все 3:
+    subgraph platform["Medical Viewer Platform"]
+      backend["Backend API (Go)"]
+      kafka["Kafka"]
+      notify["Notification Gateway"]
+      s3["S3\nStudy archives"]
+      pg["PostgreSQL\nStudies metadata"]
+      mongo["MongoDB\nReports & plans"]
+    end
 
-  - FCM/APNS — доставка, когда приложение в фоне/закрыто,
-  - in-app — лучший UX, когда приложение уже на экране.
+    subgraph mobile_sys["Mobile"]
+      mobile["Mobile App (iOS/Android)"]
+    end
+
+    pacs -->|DICOM| script
+    script -->|Archive upload| s3
+    script -->|POST studies/reports/plans| backend
+
+    backend -->|Studies metadata| pg
+    backend -->|Reports & plans| mongo
+    backend -->|Domain events| kafka
+    kafka --> notify
+
+    doctor --> mobile
+    notify -->|Push / In-app| mobile
+    mobile -->|GET studies/reports/plans| backend
+    
+
+    classDef actor fill:#1f2937,stroke:#94a3b8,color:#e5e7eb;
+    classDef core fill:#1e3a8a,stroke:#93c5fd,color:#eff6ff;
+    classDef data fill:#064e3b,stroke:#6ee7b7,color:#ecfdf5;
+    classDef events fill:#4c1d95,stroke:#c4b5fd,color:#f5f3ff;
+
+    class doctor,pacs actor;
+    class script,backend,mobile core;
+    class s3,pg,mongo data;
+    class kafka,notify events;
+```
 
 # Описание сервиса в целом
 
